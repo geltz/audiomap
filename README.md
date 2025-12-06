@@ -4,7 +4,6 @@
 
 audiomap is a visual audio explorer.  
 it maps files onto a 2d plane based on sonic information, to find similar sounds visually.  
-there is also a drag mode toggled with `d` to drag files into other programs easily.  
 
 **filetypes**
 
@@ -41,3 +40,4 @@ there is also a drag mode toggled with `d` to drag files into other programs eas
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
+
