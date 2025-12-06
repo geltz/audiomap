@@ -3,34 +3,48 @@
 </p>
 
 audiomap is a visual audio explorer.  
-it maps files onto a 2d plane based on sonic information, allowing you to find similar sounds visually.   
+it maps files onto a 2d plane based on sonic information, allowing you to find similar sounds visually.
 
 **filetypes**
-- wav  
-- flac  
-- mp3  
 
-**controls**  
+| extension |
+| :--- |
+| wav |
+| flac |
+| mp3 |
+| m4a |
+| wma |
+| aac |
+| ogg |
+| aiff |
 
-- left/right click and drag to pan the viewport.  
-- scroll wheel to zoom in and out.  
-- click a dot to play the sample. 
-- right click a dot to view file statistics.  
+**controls**
 
-**analysis**  
+| input | action |
+| :--- | :--- |
+| left/right drag | pan the viewport |
+| scroll wheel | zoom in and out |
+| click dot | play the sample |
+| right click dot | view file statistics |
+| drag mode | drag files into other windows |
 
-- x-axis: zero crossing rate (noisiness/timbre).  
-- y-axis: root mean square (loudness/energy).  
-- color: calculated from zcr density. 
-- lines: connect audibly similar samples on hover.  
+**analysis**
 
-**keys**  
+| component | description |
+| :--- | :--- |
+| x-axis | zero crossing rate (noisiness/timbre) |
+| y-axis | root mean square (loudness/energy) |
+| color | calculated from zcr density |
+| lines | connect audibly similar samples on hover |
+| oscilloscope | real-time waveform visualization on playback |
+
+**keys**
 
 | key | action |
 | :--- | :--- |
 | o | open folder |
 | l | toggle list view |
+| d | toggle drag mode |
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
-
