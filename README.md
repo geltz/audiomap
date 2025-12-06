@@ -3,9 +3,7 @@
 </p>
 
 audiomap is a visual audio explorer.  
-it maps files onto a 2d plane based on sonic information, allowing you to find similar sounds visually. 
-
-currently there is no subfolder indexing.  
+it maps files onto a 2d plane based on sonic information, allowing you to find similar sounds visually.   
 
 **filetypes**
 - wav  
@@ -37,3 +35,5 @@ currently there is no subfolder indexing.
 | esc | close list / quit app |
 
 
+**misc**
+currently there is no subfolder indexing.  
