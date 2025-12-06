@@ -37,6 +37,7 @@ there is also a drag mode toggled with `d` to drag files into other programs eas
 | o | open folder |
 | l | toggle list view |
 | d | toggle drag mode |
+| s | stop playback |
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
