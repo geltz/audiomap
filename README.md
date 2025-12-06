@@ -28,15 +28,3 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
-
-**stats** 
-
-| metric | description |
-| :--- | :--- |
-| zcr | zero crossing rate |
-| rms | root mean square |
-| dur | duration in seconds |
-| size | file size in mb |
-
-
-this program is free and [donations are welcome](https://ko-fi.com/geltz) 
