@@ -36,12 +36,18 @@ DEFINE_GUID(MF_SOURCE_READER_ENABLE_ADVANCED_PROCESSING,
 
 using namespace Gdiplus;
 
+// Wine detection
+bool IsRunningOnWine() {
+    HMODULE hNtDll = GetModuleHandleA("ntdll.dll");
+    if (!hNtDll) return false;
+    return GetProcAddress(hNtDll, "wine_get_version") != NULL;
+}
+
 #define MAX_FILES 5000
 #define MAX_FILE_SIZE_MB 100
 #define WAVEFORM_RES 64 
 #define WIN_WIDTH 800
 #define WIN_HEIGHT 600
-
 
 // Drag & drop helper
 class DropSource : public IDropSource {
@@ -254,9 +260,22 @@ public:
         DWORD now = GetTickCount();
         DWORD elapsed = now - startTime;
         
-        // Slow drift
-        float scrollOffset = fmodf((float)elapsed * 0.00015f, (float)w);
-        int baseOffset = 44 + (int)((elapsed / 1000.0f) * byteRate);
+        // Wider view
+        // 1. Center the playhead
+        long long currentByte = 44 + (long long)((elapsed / 1000.0f) * byteRate);
+        
+        // 2. View 1000ms (1 second) to slow down scrolling speed visually
+        int viewMs = 1000; 
+        int viewBytes = (byteRate * viewMs) / 1000;
+        viewBytes = (viewBytes + 1) & ~1; 
+
+        // 3. Start point for drawing (Playhead is Center)
+        long long startByte = currentByte - (viewBytes / 2);
+
+        // 4. Calculate region per pixel
+        int samplesInView = viewBytes / 2; 
+        int samplesPerPixel = samplesInView / w;
+        if (samplesPerPixel < 1) samplesPerPixel = 1;
 
         Gdiplus::Point ptStart(r.left, cy);
         Gdiplus::Point ptEnd(r.right, cy);
@@ -273,47 +292,44 @@ public:
         std::vector<Gdiplus::PointF> points;
         points.reserve(w);
 
-        int totalPoints = w / 2; 
-        int regionSize = 250; 
-        
-        for(int i = 0; i < totalPoints; i++) {
-            int startSampleIdx = i * regionSize;
-            int startPos = baseOffset + startSampleIdx * 2;
+        for(int i = 0; i < w; i++) {
+            long long p = startByte + (long long)i * samplesPerPixel * 2;
             
+            if (p < 44 || p >= maxBytes - samplesPerPixel*2) {
+                points.emplace_back((REAL)(r.left + i), (REAL)cy);
+                continue;
+            }
+
             long long sum = 0;
             int count = 0;
-            
-            // Check slightly fewer points to let peaks through better
-            int scanLimit = 24; 
-            int step = regionSize / scanLimit; 
-            if (step < 1) step = 1;
 
-            for (int k = 0; k < regionSize; k += step) {
-                int p = startPos + k * 2;
-                if (p + 2 < maxBytes && p >= 44) {
-                    short v1 = *(short*)(audioMem + p);
-                    short v2 = *(short*)(audioMem + p + 2);
-                    sum += (v1 + v2) / 2;
-                    count++;
-                }
+            // Reduced step size to read more data. 
+            // Previous divisor was 64, now 128. Less skipping = less jitter.
+            int step = (samplesPerPixel > 128) ? samplesPerPixel / 128 : 1;
+
+            for (int k = 0; k < samplesPerPixel; k += step) {
+                short v = *(short*)(audioMem + p + k * 2);
+                sum += v;
+                count++;
             }
             
             short val = (count > 0) ? (short)(sum / count) : 0;
-
-            // Increased amplitude multiplier (1.2f)
-            // Compensates for the dampening effect of averaging
-            float amplitude = (val / 32768.0f) * (h / 2 - 2) * 1.2f;
             
-            float y = cy - amplitude;
-            float x = r.left + (float)i * (w / (float)totalPoints) - scrollOffset;
-            
-            if (x >= r.left - 50 && x <= r.right + 50) {
-                 points.emplace_back(x, y);
-            }
+            // Increased multiplier
+            float amplitude = (val / 32768.0f) * (h / 2 - 6) * 4.0f;
+            points.emplace_back((REAL)(r.left + i), (REAL)(cy - amplitude));
         }
 
+        // Apply a [1, 2, 1] kernel to smooth jagged edges before drawing
         if (points.size() > 2) {
-            g.DrawCurve(&penWave, points.data(), (INT)points.size(), 0.5f); 
+            std::vector<Gdiplus::PointF> smoothPts = points;
+            for (size_t i = 1; i < points.size() - 1; i++) {
+                // Average: 25% Left, 50% Center, 25% Right
+                float ny = (points[i-1].Y + points[i].Y * 2.0f + points[i+1].Y) / 4.0f;
+                smoothPts[i].Y = ny;
+            }
+            // Use the smoothed points for the curve
+            g.DrawCurve(&penWave, smoothPts.data(), (INT)smoothPts.size(), 0.5f); 
         }
     }
 };
@@ -329,6 +345,10 @@ typedef struct {
     // Input
     int isDragging, isRightClickDrag;
     POINT lastMouse, currentMouse, rightClickStart;
+
+    // --- ADDED: Smooth coordinates ---
+    struct { float x, y; } smoothMouse; 
+
     float anchorX, anchorY;
     bool keys[6];
     bool isDragMode;
@@ -339,6 +359,7 @@ typedef struct {
     
     // UI state
     int hoverIndex, menuIndex, menuVisible;
+    int lastHoverIndex;
     UIAnim hoverAnim, menuAnim;
     
     // List view
@@ -360,7 +381,7 @@ typedef struct {
     // Button animations
     UIAnim animBtnOpen, animBtnList, animMinimap;
     UIAnim animOscHover;
-    int oscSampleOffset; // Track playback position for scrolling wave
+    int oscSampleOffset; 
 
     // Playback state for osc
     DWORD playStartTime;
@@ -657,80 +678,86 @@ void ScanDirectory(const char* folderChar) {
 
     if (allFiles.empty()) return;
 
-    // Thread worker
-    auto Worker = [&](int start, int end) {
+    // Wine compatibility - use single thread
+    if (IsRunningOnWine()) {
         OleInitialize(NULL);
-        for (int i = start; i < end; i++) {
-            if (app.count >= MAX_FILES) break;
-            
-            // Process locally
-            const wchar_t* path = allFiles[i].c_str();
-            int numSamples, rate, ch;
-            short* rawData = AudioDecoder::Load(path, &numSamples, &rate, &ch);
-            
-            if (rawData) {
-                AudioSample temp = {0};
-                temp.visualData = (float*)calloc(WAVEFORM_RES, sizeof(float));
-                
-                // Analysis
-                double totalSq = 0; int crossings = 0;
-                int visualStep = (numSamples / WAVEFORM_RES) < 1 ? 1 : (numSamples / WAVEFORM_RES);
-                for (int k = 0; k < numSamples; k++) {
-                    float val = rawData[k] / 32768.0f;
-                    if (k > 0 && rawData[k] * rawData[k-1] < 0) crossings++;
-                    totalSq += val * val;
-                    if (k % visualStep == 0 && (k/visualStep) < WAVEFORM_RES) temp.visualData[k/visualStep] = val;
-                }
-                float rawRms = (float)sqrt(sqrt(totalSq / numSamples));
-                float rawZcr = (float)sqrt((float)crossings / numSamples);
-                float spreadRms = powf(rawRms, 0.33f); float spreadZcr = powf(rawZcr, 0.33f);
-                float jitterX = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.05f;
-                float jitterY = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.05f;
-                
-                temp.rms = (spreadRms + jitterY) * 5.0f;
-                temp.zcr = (spreadZcr + jitterX) * 5.0f;
-                
-                const wchar_t* p = wcsrchr(path, L'\\');
-                wcscpy(temp.filename, p ? p + 1 : path);
-                wcscpy(temp.fullpath, path);
-                temp.bitsPerSample = 16; temp.numSamples = numSamples / ch;
-                temp.sampleRate = rate; temp.channels = ch;
-                temp.duration = (float)temp.numSamples / (float)rate;
-                temp.fileSize = numSamples * 2;
-                
-                float t = rawZcr * 3.0f; if (t > 1.0f) t = 1.0f;
-                int r, g, b;
-                if (t < 0.5f) { float lt = t*2.0f; r=255-(int)(lt*100); g=100+(int)(lt*155); b=100; } 
-                else { float lt = (t-0.5f)*2.0f; r=155-(int)(lt*100); g=255-(int)(lt*100); b=100+(int)(lt*155); }
-                temp.color = RGB((r+255)/2, (g+255)/2, (b+255)/2);
-                
-                free(rawData);
-
-                // Safe commit
-                std::lock_guard<std::mutex> lock(g_appMutex);
-                if (app.count < MAX_FILES) {
-                    app.samples[app.count++] = temp;
-                } else {
-                    free(temp.visualData);
-                }
-            }
-            g_processedCount++;
+        for (size_t i = 0; i < allFiles.size() && app.count < MAX_FILES; i++) {
+            ProcessFile(allFiles[i].c_str());
         }
         CoUninitialize();
-    };
+    } 
+    else {
+        // Multithreaded import for Windows
+        auto Worker = [&](int start, int end) {
+            OleInitialize(NULL);
+            for (int i = start; i < end; i++) {
+                if (app.count >= MAX_FILES) break;
+                
+                const wchar_t* path = allFiles[i].c_str();
+                int numSamples, rate, ch;
+                short* rawData = AudioDecoder::Load(path, &numSamples, &rate, &ch);
+                
+                if (rawData) {
+                    AudioSample temp = {0};
+                    temp.visualData = (float*)calloc(WAVEFORM_RES, sizeof(float));
+                    
+                    double totalSq = 0; int crossings = 0;
+                    int visualStep = (numSamples / WAVEFORM_RES) < 1 ? 1 : (numSamples / WAVEFORM_RES);
+                    for (int k = 0; k < numSamples; k++) {
+                        float val = rawData[k] / 32768.0f;
+                        if (k > 0 && rawData[k] * rawData[k-1] < 0) crossings++;
+                        totalSq += val * val;
+                        if (k % visualStep == 0 && (k/visualStep) < WAVEFORM_RES) temp.visualData[k/visualStep] = val;
+                    }
+                    float rawRms = (float)sqrt(sqrt(totalSq / numSamples));
+                    float rawZcr = (float)sqrt((float)crossings / numSamples);
+                    float spreadRms = powf(rawRms, 0.33f); float spreadZcr = powf(rawZcr, 0.33f);
+                    float jitterX = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.05f;
+                    float jitterY = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.05f;
+                    
+                    temp.rms = (spreadRms + jitterY) * 5.0f;
+                    temp.zcr = (spreadZcr + jitterX) * 5.0f;
+                    
+                    const wchar_t* p = wcsrchr(path, L'\\');
+                    wcscpy(temp.filename, p ? p + 1 : path);
+                    wcscpy(temp.fullpath, path);
+                    temp.bitsPerSample = 16; temp.numSamples = numSamples / ch;
+                    temp.sampleRate = rate; temp.channels = ch;
+                    temp.duration = (float)temp.numSamples / (float)rate;
+                    temp.fileSize = numSamples * 2;
+                    
+                    float t = rawZcr * 3.0f; if (t > 1.0f) t = 1.0f;
+                    int r, g, b;
+                    if (t < 0.5f) { float lt = t*2.0f; r=255-(int)(lt*100); g=100+(int)(lt*155); b=100; } 
+                    else { float lt = (t-0.5f)*2.0f; r=155-(int)(lt*100); g=255-(int)(lt*100); b=100+(int)(lt*155); }
+                    temp.color = RGB((r+255)/2, (g+255)/2, (b+255)/2);
+                    
+                    free(rawData);
 
-    // Launch threads
-    int numThreads = std::thread::hardware_concurrency();
-    if (numThreads == 0) numThreads = 2;
-    int filesPerThread = (int)allFiles.size() / numThreads;
-    std::vector<std::thread> threads;
-    
-    for(int i=0; i<numThreads; i++) {
-        int start = i * filesPerThread;
-        int end = (i == numThreads - 1) ? (int)allFiles.size() : (start + filesPerThread);
-        threads.emplace_back(Worker, start, end);
+                    std::lock_guard<std::mutex> lock(g_appMutex);
+                    if (app.count < MAX_FILES) {
+                        app.samples[app.count++] = temp;
+                    } else {
+                        free(temp.visualData);
+                    }
+                }
+                g_processedCount++;
+            }
+            CoUninitialize();
+        };
+
+        int numThreads = std::thread::hardware_concurrency();
+        if (numThreads == 0) numThreads = 2;
+        int filesPerThread = (int)allFiles.size() / numThreads;
+        std::vector<std::thread> threads;
+        
+        for(int i=0; i<numThreads; i++) {
+            int start = i * filesPerThread;
+            int end = (i == numThreads - 1) ? (int)allFiles.size() : (start + filesPerThread);
+            threads.emplace_back(Worker, start, end);
+        }
+        for(auto& t : threads) t.join();
     }
-    for(auto& t : threads) t.join();
 
     // Auto-scale
     float density = (float)app.count;
@@ -856,8 +883,8 @@ void DrawMap(HDC hdc, RECT clientRect) {
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
     // Stable flashlight source calculation
-    float lightX = (float)app.currentMouse.x;
-    float lightY = (float)app.currentMouse.y;
+    float lightX = app.smoothMouse.x;
+    float lightY = app.smoothMouse.y;
     
     // If a dot is focused (via menu or hover), snap the light source to it
     // This prevents the flashlight from moving while hovering the target
@@ -868,10 +895,16 @@ void DrawMap(HDC hdc, RECT clientRect) {
     }
 
     // Connection lines to nearest neighbors
-    if (!app.isListOpen && app.hoverIndex != -1 && app.hoverAnim.value > 0.01f) {
+    // Check lastHoverIndex to allow fading out after mouse leaves
+    if (!app.isListOpen && app.lastHoverIndex != -1 && app.hoverAnim.value > 0.01f) {
 
-        AudioSample* t = &app.samples[app.hoverIndex];
-        int alpha = app.hoverAnim.GetAlpha(20, 200);
+        AudioSample* t = &app.samples[app.lastHoverIndex];
+        
+        // Alpha 0 to 200 (Fade in/out)
+        int alpha = app.hoverAnim.GetAlpha(0, 200);
+
+        // Animation Factor for length (Ease Out Quad for snappy extension)
+        float lenT = 1.0f - (1.0f - app.hoverAnim.value) * (1.0f - app.hoverAnim.value);
 
         // Thicker lines
         Gdiplus::Pen linePen(Gdiplus::Color(alpha, alpha, alpha, alpha), 2.5f);
@@ -879,9 +912,9 @@ void DrawMap(HDC hdc, RECT clientRect) {
         struct { int id; float dist; } closest[5];
         for(int k=0; k<5; k++) closest[k] = { -1, FLT_MAX };
 
-    // Draw all samples
-    for (int i = 0; i < app.count; i++) {
-                if (i == app.hoverIndex) continue;
+        // Draw all samples
+        for (int i = 0; i < app.count; i++) {
+                if (i == app.lastHoverIndex) continue; // Skip self
                 
                 // Cull off-screen points immediately
                 if (app.samples[i].screenX < 0 || app.samples[i].screenX > clientRect.right ||
@@ -904,32 +937,60 @@ void DrawMap(HDC hdc, RECT clientRect) {
                 }
         }
 
-    for(int k=0; k<5; k++) {
+        for(int k=0; k<5; k++) {
             if(closest[k].id != -1) {
                 AudioSample* target = &app.samples[closest[k].id];
                 
                 if (alpha > 5) {
-                    // Define start (Hovered Dot) and end (Neighbor Dot) points
                     Gdiplus::Point ptStart(t->screenX, t->screenY);
-                    Gdiplus::Point ptEnd(target->screenX, target->screenY);
+                    
+                    // --- ANIMATION: Extend line based on hover value ---
+                    float dx = (float)(target->screenX - t->screenX);
+                    float dy = (float)(target->screenY - t->screenY);
+                    
+                    // Interpolate end point
+                    Gdiplus::Point ptEnd(
+                        t->screenX + (int)(dx * lenT),
+                        t->screenY + (int)(dy * lenT)
+                    );
 
-                    // Center Color: Pure White (with fade alpha)
+                    // Don't draw if length is too small (avoids gradient errors)
+                    if (abs(ptEnd.X - ptStart.X) < 1 && abs(ptEnd.Y - ptStart.Y) < 1) continue;
+
+                    // Center Color: Pure White
                     Gdiplus::Color colCenter(alpha, 255, 255, 255);
 
-                    // Extremity color: the neighbor's specific color (with fade alpha)
-                    // Extract the RGB from the target's COLORREF
+                    // Neighbor Color
                     int nR = GetRValue(target->color);
                     int nG = GetGValue(target->color);
                     int nB = GetBValue(target->color);
                     Gdiplus::Color colNeighbor(alpha, nR, nG, nB);
 
-                    // Create a gradient brush from center -> neighbor
+                    // Gradient scales with the line, keeping the tip the neighbor's color
                     Gdiplus::LinearGradientBrush gradBrush(ptStart, ptEnd, colCenter, colNeighbor);
-
-                    // Create Pen from Brush
                     Gdiplus::Pen gradPen(&gradBrush, 2.5f);
                     
                     g.DrawLine(&gradPen, ptStart, ptEnd);
+
+                    if (lenT > 0.01f && lenT < 0.99f) {
+                        float pX = (float)ptStart.X + dx * lenT;
+                        float pY = (float)ptStart.Y + dy * lenT;
+                        float size = 8.0f;
+
+                        Gdiplus::GraphicsPath path;
+                        path.AddEllipse(pX - size/2, pY - size/2, size, size);
+
+                        Gdiplus::PathGradientBrush pthGrBrush(&path);
+                        // Core is bright white, edges transparent
+                        Gdiplus::Color centerCol(alpha, 255, 255, 255);
+                        Gdiplus::Color surroundCol(0, 255, 255, 255);
+                        int count = 1;
+                        
+                        pthGrBrush.SetCenterColor(centerCol);
+                        pthGrBrush.SetSurroundColors(&surroundCol, &count);
+                        
+                        g.FillEllipse(&pthGrBrush, pX - size/2, pY - size/2, size, size);
+                    }
                 }
             }
         }
@@ -1011,8 +1072,26 @@ void DrawMap(HDC hdc, RECT clientRect) {
         
         s->textAnim.Update(showText, 0.08f); 
         if (s->textAnim.value > 0.01f) {
+            // Border fade logic
+            int margin = 100; // Distance to start fading
+            int dist = s->screenX; // Left
+            if (clientRect.right - s->screenX < dist) dist = clientRect.right - s->screenX; // Right
+            if (s->screenY < dist) dist = s->screenY; // Top
+            if (clientRect.bottom - s->screenY < dist) dist = clientRect.bottom - s->screenY; // Bottom
+            
+            float edgeFactor = 1.0f;
+            if (dist < margin) edgeFactor = (float)dist / (float)margin;
+            if (edgeFactor < 0.0f) edgeFactor = 0.0f;
+
+            // Target color is current brightness
             int val = 20 + (int)((130 - 20) * s->textAnim.value);
-            SetTextColor(g_hdcBack, RGB(val, val, val));
+            
+            // Interpolate towards background color (20, 20, 25) based on edgeFactor
+            int R = 20 + (int)((val - 20) * edgeFactor);
+            int G = 20 + (int)((val - 20) * edgeFactor);
+            int B = 25 + (int)((val - 25) * edgeFactor);
+            
+            SetTextColor(g_hdcBack, RGB(R, G, B));
             TextOutW(g_hdcBack, s->screenX + (int)r + 4, s->screenY - 6, s->filename, (int)wcslen(s->filename));
         }
 
@@ -1253,8 +1332,8 @@ void DrawMap(HDC hdc, RECT clientRect) {
                 db = 25 + (int)((db - 25) * a);
 
                 // Proximity saturation boost (existing logic)
-                float ddx = (float)(mx - app.currentMouse.x);
-                float ddy = (float)(my - app.currentMouse.y);
+                float ddx = (float)(mx - app.smoothMouse.x);
+                float ddy = (float)(my - app.smoothMouse.y);
                 float distSq = ddx*ddx + ddy*ddy;
                 
                 if (distSq < 1225.0f) {
@@ -1377,13 +1456,12 @@ void DrawMap(HDC hdc, RECT clientRect) {
         }
     }
 
-    // List panel
+// List panel
     if (app.listOpenAnim.value > 0.01f) {
         int listW = 400, listH = clientRect.bottom - 100;
         int listX = (clientRect.right - listW) / 2, listY = 50;
-        int headerOffset = 24; // Reduced from 32 to 24
+        int headerOffset = 24; 
         
-        // Dim overlay & Background
         int alphaDim = app.listOpenAnim.GetAlpha(0, 200);
         Gdiplus::SolidBrush dimBrush(Gdiplus::Color(alphaDim, 0, 0, 0));
         g.FillRectangle(&dimBrush, 0, 0, clientRect.right, clientRect.bottom);
@@ -1392,19 +1470,14 @@ void DrawMap(HDC hdc, RECT clientRect) {
         Gdiplus::SolidBrush listBg(Gdiplus::Color(alphaWin, 30, 30, 35));
         g.FillRectangle(&listBg, listX, listY, listW, listH);
 
-        // Hint text (Centered)
         const char* escHint = "esc to close";
         SIZE szHint;
         GetTextExtentPoint32A(g_hdcBack, escHint, (int)strlen(escHint), &szHint);
         int hintAlpha = app.listOpenAnim.GetAlpha(0, 150);
         SetTextColor(g_hdcBack, RGB(hintAlpha, hintAlpha, hintAlpha));
-        
-        // Center text and reduce top padding
         TextOutA(g_hdcBack, listX + (listW - szHint.cx) / 2, listY + 5, escHint, (int)strlen(escHint));
 
-        // Scrollbar logic
         int itemH = 25, totalH = app.count * itemH;
-        // Calculate scrollbar based on content height (excluding header space from view area)
         int viewH = listH - headerOffset;
         
         if (totalH > viewH) {
@@ -1415,12 +1488,10 @@ void DrawMap(HDC hdc, RECT clientRect) {
              int sbW = (int)app.scrollAnim.GetFloat(4.0f, 12.0f); 
              int sbAlpha = app.listOpenAnim.GetAlpha(0, app.scrollAnim.GetAlpha(100, 180));
              int sbX = (listX + listW) - sbW; 
-             
              Gdiplus::SolidBrush sbBrush(Gdiplus::Color(sbAlpha, 80, 80, 90));
              g.FillRectangle(&sbBrush, sbX, sbY, sbW, sbH);
         }
 
-        // Clipping (Respect headerOffset)
         Gdiplus::Region region(Gdiplus::Rect(listX, listY + headerOffset, listW, listH - headerOffset)); 
         g.SetClip(&region);
         HRGN hRgn = CreateRectRgn(listX, listY + headerOffset, listX + listW, listY + listH); 
@@ -1433,22 +1504,31 @@ void DrawMap(HDC hdc, RECT clientRect) {
 
         SelectObject(g_hdcBack, hFontUI);
 
-        // PASS 1: GDI+ Geometric drawing (Dots) - Batch this state
+        // Dots
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        
         for(int i = startIdx; i < endLoop; i++) {
             if(i < 0) continue;
             int sIdx = app.sortedIndices[i]; 
             AudioSample* s = &app.samples[sIdx];
             int yPos = listY + headerOffset + (i * itemH) - (int)app.listScrollY;
             
-            // Calculate fade
+            // Shadow logic
             float fadeAlpha = 1.0f;
             int distTop = yPos - (listY + headerOffset);
             int distBot = (listY + listH) - (yPos + itemH);
-            if (distTop < 60) fadeAlpha = (float)distTop / 60.0f;
-            if (distBot < 60) fadeAlpha = (float)distBot / 60.0f;
-            if (fadeAlpha < 0.0f) fadeAlpha = 0.0f; if (fadeAlpha > 1.0f) fadeAlpha = 1.0f;
+
+            // Calculate how far we've scrolled (0.0 to 1.0 over first 60px)
+            float scrollRatio = (app.listScrollY > 60.0f) ? 1.0f : (app.listScrollY / 60.0f);
+
+            if (distTop < 60) {
+                float posAlpha = (float)distTop / 60.0f;
+                // Only apply shadow if scrolled down
+                fadeAlpha = 1.0f - (scrollRatio * (1.0f - posAlpha));
+            }
+            if (distBot < 60) fadeAlpha *= (float)distBot / 60.0f;
+            
+            if (fadeAlpha < 0.0f) fadeAlpha = 0.0f; 
+            if (fadeAlpha > 1.0f) fadeAlpha = 1.0f;
 
             Gdiplus::Color c; c.SetFromCOLORREF(s->color); 
             int finalDotAlpha = (int)(alphaWin * fadeAlpha);
@@ -1462,21 +1542,28 @@ void DrawMap(HDC hdc, RECT clientRect) {
             }
         }
 
-        // PASS 2: GDI Text drawing - Batch this state (No smoothing switch per item)
+        // Text
         g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-        
         for(int i = startIdx; i < endLoop; i++) {
             if(i < 0) continue;
             int sIdx = app.sortedIndices[i]; 
             AudioSample* s = &app.samples[sIdx];
             int yPos = listY + headerOffset + (i * itemH) - (int)app.listScrollY;
 
+            // Same shadow logic for text
             float fadeAlpha = 1.0f;
             int distTop = yPos - (listY + headerOffset);
             int distBot = (listY + listH) - (yPos + itemH);
-            if (distTop < 60) fadeAlpha = (float)distTop / 60.0f;
-            if (distBot < 60) fadeAlpha = (float)distBot / 60.0f;
-            if (fadeAlpha < 0.0f) fadeAlpha = 0.0f; if (fadeAlpha > 1.0f) fadeAlpha = 1.0f;
+            float scrollRatio = (app.listScrollY > 60.0f) ? 1.0f : (app.listScrollY / 60.0f);
+
+            if (distTop < 60) {
+                float posAlpha = (float)distTop / 60.0f;
+                fadeAlpha = 1.0f - (scrollRatio * (1.0f - posAlpha));
+            }
+            if (distBot < 60) fadeAlpha *= (float)distBot / 60.0f;
+            
+            if (fadeAlpha < 0.0f) fadeAlpha = 0.0f; 
+            if (fadeAlpha > 1.0f) fadeAlpha = 1.0f;
 
             int baseVal = 200; 
             int hVal = s->listHoverAnim.GetAlpha(baseVal, 255);
@@ -1488,7 +1575,7 @@ void DrawMap(HDC hdc, RECT clientRect) {
             TextOutW(g_hdcBack, listX + 30, yPos + 4, s->filename, (int)wcslen(s->filename));
         }
         
-        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias); // Restore
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias); 
         SelectClipRgn(g_hdcBack, NULL); 
         DeleteObject(hRgn); 
         g.ResetClip();
@@ -1573,6 +1660,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         app.scale = 300.0f; 
         app.targetScale = 300.0f; 
         app.hoverIndex = -1; 
+        app.lastHoverIndex = -1;
         OleInitialize(NULL);
         MFStartup(MF_VERSION);
         sprintf(app.statusMsg, "click 'open' or press 'o' to load samples.");
@@ -1621,7 +1709,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             case VK_PRIOR: app.targetScale *= 1.2f; break; 
             case VK_NEXT:  app.targetScale *= 0.8f; break;
             
-            // New drag mode toggle
+            // Stop playback
+            case 'S': 
+                PlaySoundA(NULL, NULL, 0); // Stop driver
+                if (app.audioMem) { 
+                    free(app.audioMem); 
+                    app.audioMem = NULL; // OSC will go flat
+                }
+                sprintf(app.statusMsg, "stopped playback.");
+                app.msgStartTime = GetTickCount(); // Triggers existing fade logic
+                InvalidateRect(hwnd, NULL, FALSE);
+                break;
+
+            // Drag mode toggle
             case 'D': 
                 app.isDragMode = !app.isDragMode; 
                 InvalidateRect(hwnd, NULL, FALSE); 
@@ -1960,7 +2060,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 if (sx < safeLeft || sx > safeRight || sy < safeTop || sy > safeBottom) continue;
 
                 if(abs(mx - sx) + abs(my - sy) < 25) { // Click radius
-                    app.hoverIndex = i; 
+                    app.hoverIndex = i;
+                    app.lastHoverIndex = i;
                     break;
                 }
             }
@@ -2018,6 +2119,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     ShowWindow(hwnd, nCmdShow);
 
+    // Init smooth mouse to center
+    app.smoothMouse.x = (float)WIN_WIDTH / 2;
+    app.smoothMouse.y = (float)WIN_HEIGHT / 2;
+
     MSG msg = { 0 };
     LARGE_INTEGER perfFreq, perfCount, lastPerfCount;
     QueryPerformanceFrequency(&perfFreq); 
@@ -2034,6 +2139,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
              lastPerfCount = perfCount;
              
              app.fps.Update((float)dt);
+
+             float smoothSpeed = 0.25f;
+             app.smoothMouse.x += (app.currentMouse.x - app.smoothMouse.x) * smoothSpeed;
+             app.smoothMouse.y += (app.currentMouse.y - app.smoothMouse.y) * smoothSpeed;
 
              RECT r; 
              GetClientRect(hwnd, &r);
