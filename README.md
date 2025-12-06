@@ -39,5 +39,4 @@ there is also a drag mode toggled with `d` to drag files into other programs eas
 | d | toggle drag mode |
 | arrows | pan view |
 | pgup/dn | zoom view |
-
 | esc | close list / quit app |
