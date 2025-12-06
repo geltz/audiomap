@@ -13,9 +13,9 @@ it maps files onto a 2d plane based on sonic information, to find similar sounds
 
 | input | action |
 | :--- | :--- |
-| left/right drag | pan the viewport |
-| scroll wheel | zoom in and out |
-| click dot | play the sample |
+| left/right drag | pan viewport |
+| scroll wheel | zoom in/out |
+| click dot | play sample |
 | right click dot | view file statistics |
 | drag mode | drag files into other windows |
 
@@ -40,4 +40,5 @@ it maps files onto a 2d plane based on sonic information, to find similar sounds
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
+
 
