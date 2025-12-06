@@ -7,7 +7,7 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 
 currently there is no subfolder indexing.  
 
-**supported filetypes**
+**filetypes**
 - wav  
 - flac  
 - mp3  
@@ -35,4 +35,5 @@ currently there is no subfolder indexing.
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
+
 
