@@ -20,7 +20,7 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 **analysis**  
 
 - x-axis: zero crossing rate (noisiness/timbre).  
-- y-axis: rms (loudness/energy).  
+- y-axis: root mean square (loudness/energy).  
 - color: calculated from zcr density. 
 - lines: connect audibly similar samples on hover.  
 
@@ -33,3 +33,4 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
+
