@@ -7,7 +7,7 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 
 **filetypes**
 
-wav, flac, mp3, m4a, wma, aac, ogg, aiff	
+`wav`, `flac`, `mp3`, `m4a`, `wma`, `aac`, `ogg`, `aiff` 
 
 **controls**
 
