@@ -33,7 +33,3 @@ it maps files onto a 2d plane based on sonic information, allowing you to find s
 | arrows | pan view |
 | pgup/dn | zoom view |
 | esc | close list / quit app |
-
-
-**misc**
-currently there is no subfolder indexing.  
