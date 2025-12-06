@@ -1,5 +1,0 @@
-// resource.rc
-#include <windows.h>
-
-// ID 101 is standard for the main application icon
-101 ICON "audiomap.ico"
