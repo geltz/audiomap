@@ -19,16 +19,6 @@ it maps files onto a 2d plane based on sonic information, to find similar sounds
 | right click dot | view file statistics |
 | drag mode | drag files into other windows |
 
-**analysis**
-
-| component | description |
-| :--- | :--- |
-| x-axis | zero crossing rate (noisiness/timbre) |
-| y-axis | root mean square (loudness/energy) |
-| color | calculated from zcr density |
-| lines | connect audibly similar samples on hover |
-| oscilloscope | real-time waveform visualization on playback |
-
 **keys**
 
 | key | action |
@@ -41,4 +31,12 @@ it maps files onto a 2d plane based on sonic information, to find similar sounds
 | pgup/dn | zoom view |
 | esc | close list / quit app |
 
+**analysis**
 
+| component | description |
+| :--- | :--- |
+| x-axis | zero crossing rate (noisiness/timbre) |
+| y-axis | root mean square (loudness/energy) |
+| color | calculated from zcr density |
+| lines | connect audibly similar samples on hover |
+| oscilloscope | real-time waveform visualization on playback |
