@@ -1,7 +1,7 @@
 [Setup]
 AppId={{E4F14619-EDF4-4CCB-BBF9-251730C00B4A}
 AppName=audiomap
-AppVersion=1.2
+AppVersion=1.3
 AppPublisher=geltz
 DefaultDirName={autopf}\audiomap
 UsePreviousAppDir=no
@@ -11,7 +11,7 @@ UninstallDisplayIcon={app}\audiomap.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir=.
-OutputBaseFilename=audiomap_setup_1.2
+OutputBaseFilename=audiomap_setup_1.3
 WizardStyle=modern
 ChangesAssociations=no
 DirExistsWarning=no
