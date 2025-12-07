@@ -377,7 +377,7 @@ typedef struct {
     int isDragging, isRightClickDrag;
     POINT lastMouse, currentMouse, rightClickStart;
 
-    // --- ADDED: Smooth coordinates ---
+    // Smooth coordinates
     struct { float x, y; } smoothMouse; 
 
     float anchorX, anchorY;
