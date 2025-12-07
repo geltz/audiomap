@@ -215,6 +215,7 @@ typedef struct {
     int screenX, screenY;
     COLORREF color;
     UIAnim listHoverAnim, textAnim;
+    float rippleAnim;
 } AudioSample;
 
 // Wiggly line
@@ -346,7 +347,7 @@ typedef struct {
     int isDragging, isRightClickDrag;
     POINT lastMouse, currentMouse, rightClickStart;
 
-    // Smooth coordinates
+    // --- ADDED: Smooth coordinates ---
     struct { float x, y; } smoothMouse; 
 
     float anchorX, anchorY;
@@ -561,10 +562,13 @@ void ProcessFile(const wchar_t* filepath) {
     const wchar_t* p = wcsrchr(filepath, L'\\'); 
     wcscpy(s->filename, p ? p + 1 : filepath); 
     wcscpy(s->fullpath, filepath);
+    
     s->bitsPerSample = 16; s->numSamples = numSamples / ch; 
     s->sampleRate = rate; s->channels = ch;
     s->duration = (float)s->numSamples / (float)rate; s->fileSize = numSamples * 2; 
-    
+    s->fileSize = numSamples * 2; 
+    s->rippleAnim = 0.0f;
+
     float t = rawZcr * 3.0f; 
     if (t > 1.0f) t = 1.0f;
     int r, g, b;
@@ -1131,6 +1135,16 @@ void DrawMap(HDC hdc, RECT clientRect) {
             g.FillEllipse(&br, s->screenX - r, s->screenY - r, r*2, r*2);
         }
 
+        // Ripple effect
+        if (s->rippleAnim > 0.01f) {
+            float t = 1.0f - s->rippleAnim; // 0.0 to 1.0
+            float rad = r * 2.0f + (t * 100.0f); // Smaller expansion
+            int ripAlpha = (int)(120 * s->rippleAnim); // More subtle opacity
+            
+            Gdiplus::Pen ripPen(Gdiplus::Color(ripAlpha, 255, 255, 255), 1.5f);
+            g.DrawEllipse(&ripPen, s->screenX - rad, s->screenY - rad, rad * 2, rad * 2);
+        }
+
         // Hover widget (force full alpha if menu is open for this item)
         float finalAlpha = (app.menuVisible && i == app.menuIndex) ? 1.0f : app.hoverAnim.value;
 
@@ -1573,6 +1587,20 @@ void DrawMap(HDC hdc, RECT clientRect) {
             
             SetTextColor(g_hdcBack, RGB(rT, gT, bT));
             TextOutW(g_hdcBack, listX + 30, yPos + 4, s->filename, (int)wcslen(s->filename));
+
+            // find button
+            const char* goTxt = "find";
+            SIZE szGo; GetTextExtentPoint32A(g_hdcBack, goTxt, 4, &szGo);
+            int goX = listX + listW - 40 - szGo.cx;
+            
+            // Check hover for find specifically
+            POINT pt = app.currentMouse;
+            bool hoverGo = (pt.x >= goX - 5 && pt.x <= goX + szGo.cx + 5 && 
+                            pt.y >= yPos && pt.y <= yPos + itemH);
+                            
+            int goAlpha = (int)((hoverGo ? 200 : 80) * fadeAlpha);
+            SetTextColor(g_hdcBack, RGB(goAlpha, goAlpha, goAlpha));
+            TextOutA(g_hdcBack, goX, yPos + 4, goTxt, 4);
         }
         
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias); 
@@ -1832,9 +1860,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     
                     if(idx >= 0 && idx < app.count) {
                         int actualIdx = app.sortedIndices[idx];
-                        PlayAudio(actualIdx);
-                        app.listClickedIdx = actualIdx; 
-                        app.listClickAnim = 1.0f; 
+
+                        // "find" hit detection (Right side of row, excluding scrollbar area)
+                        if (mx >= listX + listW - 90 && mx <= listX + listW - 20) {
+                            app.isListOpen = false;
+
+                            // Center camera: offset = -position
+                            app.offsetX = -app.samples[actualIdx].zcr;
+                            app.offsetY = -app.samples[actualIdx].rms;
+
+                            // Trigger visual feedback
+                            app.samples[actualIdx].rippleAnim = 1.0f;
+                        } 
+                        else {
+                            PlayAudio(actualIdx);
+                            app.listClickedIdx = actualIdx; 
+                            app.listClickAnim = 1.0f; 
+                        }
                     }
                 }
             }
@@ -2164,6 +2206,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                      int sIdx = app.sortedIndices[i];
                      bool isActive = (i == app.listHoverIdx) && (app.isListOpen);
                      app.samples[sIdx].listHoverAnim.Update(isActive, 0.15f);
+                 }
+             }
+
+             // Ripple animation
+             for (int i = 0; i < app.count; i++) {
+                 if (app.samples[i].rippleAnim > 0.0f) {
+                     app.samples[i].rippleAnim -= 0.015f;
+                     if(app.samples[i].rippleAnim < 0.0f) app.samples[i].rippleAnim = 0.0f;
                  }
              }
 
