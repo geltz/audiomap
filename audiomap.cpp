@@ -185,7 +185,9 @@ public:
 class FpsCounter {
 public:
     int frames, displayFps;
+    bool easterEgg;
     float timeAccum;
+    
     void Update(float dt) {
         frames++; 
         timeAccum += dt;
@@ -195,11 +197,39 @@ public:
             timeAccum = 0.0f; 
         }
     }
-    void Draw(HDC hdc) {
-        char buf[16]; 
-        sprintf(buf, "fps: %d", displayFps);
-        SetTextColor(hdc, RGB(80, 80, 80)); 
-        TextOutA(hdc, 15, 15, buf, (int)strlen(buf));
+    
+    void Draw(HDC hdc, POINT pt) {
+        RECT r = {15, 15, 80, 35};
+        bool hover = (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+
+        if (!easterEgg) {
+            char buf[16]; 
+            sprintf(buf, "fps: %d", displayFps);
+            int c = hover ? 237 : 80; 
+            SetTextColor(hdc, RGB(c, c, c)); 
+            TextOutA(hdc, 15, 15, buf, (int)strlen(buf));
+        } else {
+            const char* txt = "version: 1.3";
+            int x = 15;
+            float t = (float)GetTickCount();
+            
+            for(int i = 0; txt[i]; i++) {
+                // Rainbow color (sine wave cycling)
+                float hue = (t * 0.2f) + (i * 25.0f);
+                int R = (int)(sinf(hue * 0.017f) * 127 + 128);
+                int G = (int)(sinf((hue + 120) * 0.017f) * 127 + 128);
+                int B = (int)(sinf((hue + 240) * 0.017f) * 127 + 128);
+
+                // Bouncing Y position
+                int y = 15 + (int)(sinf(t * 0.005f + i * 0.5f) * 4.0f);
+
+                SetTextColor(hdc, RGB(R, G, B));
+                TextOutA(hdc, x, y, &txt[i], 1);
+                
+                SIZE sz; GetTextExtentPoint32A(hdc, &txt[i], 1, &sz);
+                x += sz.cx;
+            }
+        }
     }
 };
 
@@ -1101,7 +1131,20 @@ void DrawMap(HDC hdc, RECT clientRect) {
 
         // Dots
         Gdiplus::Color dotCol; 
-        dotCol.SetFromCOLORREF(s->color);
+        
+        if (app.fps.easterEgg) {
+            // Pastel Rainbow: Base 200 + Amp 55 -> Range [145..255]
+            float t = GetTickCount() * 0.003f;
+            float phase = i * 0.02f; // Index-based gradient
+            
+            int r = 200 + (int)(sinf(t + phase) * 55.0f);
+            int g = 200 + (int)(sinf(t + phase + 2.094f) * 55.0f); // +120 deg
+            int b = 200 + (int)(sinf(t + phase + 4.188f) * 55.0f); // +240 deg
+            
+            dotCol = Gdiplus::Color(255, r, g, b);
+        } else {
+            dotCol.SetFromCOLORREF(s->color);
+        }
 
         // Check isDragMode instead of isCtrlHold
         if (app.isDragMode) {
@@ -1255,9 +1298,9 @@ void DrawMap(HDC hdc, RECT clientRect) {
         }
     }
 
-    app.fps.Draw(g_hdcBack);
+    app.fps.Draw(g_hdcBack, app.currentMouse);
 
-    g.SetSmoothingMode(Gdiplus::SmoothingModeNone); 
+    g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
 
     // Oscilloscope
     // Left of minimap (120px) + 10px margin = 130px offset
@@ -1598,8 +1641,13 @@ void DrawMap(HDC hdc, RECT clientRect) {
             bool hoverGo = (pt.x >= goX - 5 && pt.x <= goX + szGo.cx + 5 && 
                             pt.y >= yPos && pt.y <= yPos + itemH);
                             
-            int goAlpha = (int)((hoverGo ? 200 : 80) * fadeAlpha);
-            SetTextColor(g_hdcBack, RGB(goAlpha, goAlpha, goAlpha));
+            // Fade towards list background (30, 30, 35) instead of black
+            int targetVal = hoverGo ? 200 : 80;
+            int rG = 30 + (int)((targetVal - 30) * fadeAlpha);
+            int gG = 30 + (int)((targetVal - 30) * fadeAlpha);
+            int bG = 35 + (int)((targetVal - 35) * fadeAlpha);
+
+            SetTextColor(g_hdcBack, RGB(rG, gG, bG));
             TextOutA(g_hdcBack, goX, yPos + 4, goTxt, 4);
         }
         
@@ -1804,6 +1852,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         RECT r; 
         GetClientRect(hwnd, &r);
         
+        //
+        if (mx >= 15 && mx <= 80 && my >= 15 && my <= 35) {
+            app.fps.easterEgg = !app.fps.easterEgg;
+            return 0;
+        }
+
         // Minimap
         if (app.count > 0 && mx >= app.minimapRect.left && mx <= app.minimapRect.right &&
             my >= app.minimapRect.top && my <= app.minimapRect.bottom) {
@@ -2293,6 +2347,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     timeEndPeriod(1);
-    GdiplusShutdown(gdiplusToken);
+    Gdiplus::GdiplusShutdown(gdiplusToken);
     return 0;
 }
