@@ -19,7 +19,7 @@
 #include <mutex>
 #include <atomic>
 
-#pragma comment(lib,"Gdiplus.lib")
+#pragma comment(lib, "Gdiplus.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "mfplat.lib")
